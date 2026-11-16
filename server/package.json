@@ -1,0 +1,35 @@
+{
+  "name": "server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node --watch-path=src --env-file-if-exists=.env src/index.js",
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "db:push": "node scripts/prisma.mjs db push",
+    "db:studio": "node scripts/prisma.mjs studio",
+    "generate": "node scripts/prisma.mjs generate",
+    "seed": "node --env-file-if-exists=.env prisma/seed.js",
+    "test": "node scripts/test.mjs",
+    "postinstall": "node scripts/prisma.mjs generate"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.3",
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
+    "pdfkit": "^0.17.2",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "prisma": "6.19.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

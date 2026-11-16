@@ -1,0 +1,28 @@
+{
+  "name": "brukline",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Brukline: company management for clearing and forwarding agents in any country",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "setup": "npm run db:push -w server && npm run seed -w server",
+    "dev": "concurrently -n api,web -c blue,cyan \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w client",
+    "start": "npm start -w server",
+    "test": "npm test -w server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "allowScripts": {
+    "@prisma/client@6.19.3": true,
+    "@prisma/engines@6.19.3": true,
+    "prisma@6.19.3": true
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

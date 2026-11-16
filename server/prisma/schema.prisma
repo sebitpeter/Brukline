@@ -1,0 +1,384 @@
+// Brukline - data model for clearing & forwarding agents.
+// Multi-tenant and multi-country: every business table carries companyId, and each
+// company sets its own country, base currency, tax and customs authority in Settings.
+// Money is stored as Int in the currency's MINOR units (UGX has 0 decimals, so 1 = UGX 1;
+// KES/USD have 2, so 150000 = KES 1,500.00). Documents snapshot the currency, decimals,
+// tax name/rate and exchange rate at the time they are created.
+// Enum-like fields are plain strings (validated in the API) so the same schema also runs
+// on SQLite for offline local development (see scripts/prisma.mjs).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Company {
+  id                 String   @id @default(cuid())
+  name               String
+  tagline            String?
+  taxId              String?  // the company's own TIN / KRA PIN / VAT No.
+  address            String?
+  phone              String?
+  email              String?
+  website            String?
+  logoFile           String?  // stored file name under uploads/<companyId>/
+  logoMime           String?
+  // Country & money
+  country            String   @default("UG") // ISO 3166-1 alpha-2
+  dialCode           String   @default("256") // default phone country code, digits only
+  currency           String   @default("UGX") // ISO 4217 base currency
+  secondaryCurrency  String?  // e.g. USD, shown on documents next to the base amount
+  fxRate             Float?   // 1 unit of secondaryCurrency = fxRate units of base currency
+  locale             String   @default("en-UG")
+  timezone           String   @default("Africa/Kampala")
+  // Tax & customs
+  taxName            String   @default("VAT")
+  taxRateBp          Int      @default(1800) // basis points: 1800 = 18%
+  taxIdLabel         String   @default("TIN")
+  customsAuthority   String   @default("URA")
+  stations           String   @default("") // customs stations / borders / ports, one per line
+  // Documents & messaging
+  bankDetails        String?
+  mobileMoney        String?
+  docFooter          String?
+  autoStatusMessages Boolean  @default(true)
+  createdAt          DateTime @default(now())
+
+  users         User[]
+  clients       Client[]
+  shipments     Shipment[]
+  events        ShipmentEvent[]
+  salesDocs     SalesDoc[]
+  payments      Payment[]
+  expenses      Expense[]
+  files         ShipmentFile[]
+  packingLists  PackingList[]
+  messages      Message[]
+  counters      DocCounter[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  companyId    String
+  name         String
+  email        String   @unique
+  phone        String?
+  passwordHash String
+  role         String   // ADMIN | ACCOUNTANT | AGENT
+  active       Boolean  @default(true)
+  tokenVersion Int      @default(0) // bump to sign the user out everywhere (password reset, deactivate)
+  createdAt    DateTime @default(now())
+
+  company          Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  assigned         Shipment[]      @relation("AssignedAgent")
+  expenses         Expense[]       @relation("SpentBy")
+  reviewedExpenses Expense[]       @relation("ReviewedBy")
+  events           ShipmentEvent[]
+  messages         Message[]
+  files            ShipmentFile[]
+  payments         Payment[]
+
+  @@index([companyId])
+}
+
+model Client {
+  id            String   @id @default(cuid())
+  companyId     String
+  name          String
+  kind          String   @default("IMPORTER") // IMPORTER | EXPORTER | BOTH
+  taxId         String?
+  contactPerson String?
+  phone         String?  // E.164
+  email         String?
+  address       String?
+  channel       String   @default("SMS") // SMS | WHATSAPP
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  shipments    Shipment[]
+  salesDocs    SalesDoc[]
+  packingLists PackingList[]
+  messages     Message[]
+
+  @@index([companyId])
+}
+
+model Shipment {
+  id              String    @id @default(cuid())
+  companyId       String
+  ref             String    // SH-2026-0001
+  clientId        String
+  assignedToId    String?
+  direction       String    @default("IMPORT") // IMPORT | EXPORT | TRANSIT
+  mode            String    @default("ROAD")   // ROAD | SEA | AIR | RAIL
+  truckRegs       String?   // one or more, comma separated
+  trailerReg      String?
+  driverName      String?
+  driverPhone     String?
+  containerNo     String?
+  blAwb           String?
+  entryNumber     String?
+  station         String?   // customs station / border / port
+  origin          String?
+  destination     String?
+  goods           String
+  hsCode          String?
+  packages        Int?
+  weightKg        Float?
+  customsValue    Int?      // minor units of company currency
+  status          String    @default("DOCS_RECEIVED")
+  statusChangedAt DateTime  @default(now())
+  eta             DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  company      Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  client       Client          @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  assignedTo   User?           @relation("AssignedAgent", fields: [assignedToId], references: [id], onDelete: SetNull)
+  events       ShipmentEvent[]
+  expenses     Expense[]
+  files        ShipmentFile[]
+  salesDocs    SalesDoc[]
+  packingLists PackingList[]
+  messages     Message[]
+
+  @@unique([companyId, ref])
+  @@index([companyId, status])
+}
+
+model ShipmentEvent {
+  id         String   @id @default(cuid())
+  companyId  String
+  shipmentId String
+  userId     String?
+  kind       String   // STATUS | NOTE | EXPENSE | FILE | MESSAGE | BILLING
+  fromStatus String?
+  toStatus   String?
+  text       String
+  createdAt  DateTime @default(now())
+
+  company  Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  user     User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([shipmentId, createdAt])
+}
+
+model DocCounter {
+  companyId String
+  type      String // SH | QT | INV | RC | PL
+  year      Int
+  value     Int    @default(0)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@id([companyId, type, year])
+}
+
+// Quotations and invoices share one table (a quote converts into an invoice).
+model SalesDoc {
+  id                String    @id @default(cuid())
+  companyId         String
+  type              String    // QUOTATION | INVOICE
+  number            String    // QT-2026-0001 / INV-2026-0001
+  clientId          String
+  shipmentId        String?
+  sourceQuoteId     String?   @unique // invoice created from this quote
+  issueDate         DateTime  @default(now())
+  dueDate           DateTime? // invoice due / quote valid until
+  status            String    // QUOTATION: OPEN|ACCEPTED|DECLINED|CONVERTED; INVOICE: ISSUED|VOID (paid state is derived)
+  currency          String
+  decimals          Int
+  secondaryCurrency String?
+  fxRate            Float?
+  taxName           String
+  taxRateBp         Int
+  subtotal          Int       @default(0)
+  taxTotal          Int       @default(0)
+  total             Int       @default(0)
+  notes             String?
+  shareToken        String    @unique // unguessable token for the client "view invoice" link
+  createdById       String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  company     Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  client      Client     @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  shipment    Shipment?  @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+  sourceQuote SalesDoc?  @relation("QuoteToInvoice", fields: [sourceQuoteId], references: [id], onDelete: SetNull)
+  invoice     SalesDoc?  @relation("QuoteToInvoice")
+  lines       LineItem[]
+  payments    Payment[]
+  messages    Message[]
+
+  @@unique([companyId, number])
+  @@index([companyId, type])
+}
+
+model LineItem {
+  id          String  @id @default(cuid())
+  docId       String
+  kind        String  // AGENCY | DISBURSEMENT
+  description String
+  quantity    Float   @default(1)
+  unitPrice   Int     // minor units
+  taxable     Boolean @default(false)
+  amount      Int     // round(quantity * unitPrice)
+  tax         Int     // round(amount * taxRateBp / 10000) if taxable
+  expenseId   String? @unique // approved expense pulled in as a disbursement (billed once)
+  sortOrder   Int     @default(0)
+
+  doc     SalesDoc @relation(fields: [docId], references: [id], onDelete: Cascade)
+  expense Expense? @relation(fields: [expenseId], references: [id], onDelete: SetNull)
+}
+
+// A payment against an invoice; each one is a receipt (RC-2026-0001).
+model Payment {
+  id            String   @id @default(cuid())
+  companyId     String
+  invoiceId     String
+  receiptNumber String
+  amount        Int
+  method        String   // CASH | MOBILE_MONEY | BANK | CHEQUE | CARD
+  reference     String?
+  paidAt        DateTime @default(now())
+  note          String?
+  receivedById  String?
+  createdAt     DateTime @default(now())
+
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invoice    SalesDoc @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  receivedBy User?    @relation(fields: [receivedById], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, receiptNumber])
+  @@index([invoiceId])
+}
+
+model Expense {
+  id           String    @id @default(cuid())
+  companyId    String
+  shipmentId   String
+  spentById    String
+  category     String    // CUSTOMS_TAXES | PORT_CHARGES | HANDLING | STORAGE | TRANSPORT | ESCORT | BOND | DOCUMENTATION | OTHER
+  description  String
+  amount       Int       // minor units of company currency
+  spentOn      DateTime
+  method       String    // CASH | MOBILE_MONEY | BANK | CARD | CHEQUE
+  reference    String?
+  billable     Boolean   @default(true) // a disbursement to recharge to the client
+  status       String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  reviewedById String?
+  reviewedAt   DateTime?
+  reviewNote   String?
+  receiptFile  String?   // stored file name
+  receiptName  String?
+  receiptMime  String?
+  receiptSize  Int?
+  createdAt    DateTime  @default(now())
+
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  shipment   Shipment   @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  spentBy    User       @relation("SpentBy", fields: [spentById], references: [id], onDelete: Restrict)
+  reviewedBy User?      @relation("ReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  lineItem   LineItem?
+
+  @@index([companyId, status])
+  @@index([shipmentId])
+}
+
+model ShipmentFile {
+  id           String   @id @default(cuid())
+  companyId    String
+  shipmentId   String
+  type         String   // COMMERCIAL_INVOICE | PACKING_LIST | BL_AWB | ENTRY | ASSESSMENT | TAX_RECEIPT | RELEASE_ORDER | DELIVERY_NOTE | OTHER
+  originalName String
+  storedName   String   @unique
+  mime         String
+  size         Int
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  uploadedBy User?    @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@index([shipmentId])
+}
+
+model PackingList {
+  id          String    @id @default(cuid())
+  companyId   String
+  number      String    // PL-2026-0001
+  shipmentId  String?
+  clientId    String
+  shipper     String    // shipper / exporter: name and address
+  consignee   String    // consignee / importer: name and address
+  invoiceRef  String?
+  containerNo String?
+  blAwb       String?
+  truckReg    String?
+  origin      String?
+  destination String?
+  date        DateTime  @default(now())
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  company  Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  shipment Shipment?         @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+  client   Client            @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  items    PackingListItem[]
+
+  @@unique([companyId, number])
+}
+
+model PackingListItem {
+  id          String  @id @default(cuid())
+  listId      String
+  marks       String?
+  description String
+  hsCode      String?
+  quantity    Float   @default(0)
+  unit        String? // pcs, cartons, kg ...
+  packageType String? // cartons, pallets, bags, drums ...
+  packages    Int     @default(0)
+  netKg       Float   @default(0)
+  grossKg     Float   @default(0)
+  dimensions  String? // per package, e.g. "120x80x100 cm"
+  cbm         Float?  // total for the line; worked out from dimensions x packages if left blank
+  sortOrder   Int     @default(0)
+
+  list PackingList @relation(fields: [listId], references: [id], onDelete: Cascade)
+}
+
+model Message {
+  id                String    @id @default(cuid())
+  companyId         String
+  clientId          String?
+  shipmentId        String?
+  docId             String?
+  to                String
+  channel           String    // SMS | WHATSAPP
+  provider          String
+  kind              String    // STATUS | QUOTATION | INVOICE | RECEIPT | CUSTOM
+  body              String
+  status            String    // QUEUED | SENT | FAILED
+  error             String?
+  providerMessageId String?
+  sentById          String?
+  sentAt            DateTime?
+  createdAt         DateTime  @default(now())
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  client   Client?   @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  shipment Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+  doc      SalesDoc? @relation(fields: [docId], references: [id], onDelete: SetNull)
+  sentBy   User?     @relation(fields: [sentById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+}
